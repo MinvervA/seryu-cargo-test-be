@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Driver {
+  id         Int    @id @default(autoincrement())
+  driverCode String @unique
+  name       String
+
+  attendances   DriverAttendance[]
+  shipmentCosts ShipmentCost[]
+}
+
+model DriverAttendance {
+  id               Int      @id @default(autoincrement())
+  driverCode       String
+  attendanceDate   DateTime
+  attendanceStatus Boolean
+
+  driver Driver @relation(fields: [driverCode], references: [driverCode])
+}
+
+model ShipmentCost {
+  id         Int    @id @default(autoincrement())
+  driverCode String
+  shipmentNo String
+  totalCosts Float
+  costStatus String
+
+  driver   Driver   @relation(fields: [driverCode], references: [driverCode])
+  shipment Shipment @relation(fields: [shipmentNo], references: [shipmentNo])
+}
+
+model Shipment {
+  shipmentNo     String   @id
+  shipmentDate   DateTime
+  shipmentStatus String
+
+  shipmentCosts ShipmentCost[]
+}
+
+model VariableConfig {
+  key   String @unique
+  value String
+}
