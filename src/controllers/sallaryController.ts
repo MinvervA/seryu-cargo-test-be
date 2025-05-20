@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+
 const prisma = new PrismaClient();
 
 interface ResultItem {
@@ -15,8 +16,10 @@ interface ResultItem {
 
 export const getDriverSalaries = async (req: Request, res: Response) => {
   try {
-    const { month, year, page_size, current } = req.query;
+    const { month, year, page_size, current, driver_code, status, name } =
+      req.query;
 
+    // Validasi parameter
     if (!month || !year) {
       return res
         .status(400)
@@ -36,11 +39,13 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
     const currentPage = parseInt(current as string) || 1;
     const offset = (currentPage - 1) * limit;
 
+    // Ambil konfigurasi gaji kehadiran
     const salaryConfig = await prisma.variableConfig.findUnique({
       where: { key: "DRIVER_MONTHLY_ATTENDANCE_SALARY" },
     });
     const attendanceSalaryPerDay = Number(salaryConfig?.value) || 0;
 
+    // Ambil biaya pengiriman yang tidak dibatalkan
     const shipmentCost = await prisma.shipmentCost.groupBy({
       by: ["driverCode", "costStatus"],
       where: {
@@ -49,6 +54,9 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
             gte: new Date(yearNum, monthNum - 1, 1),
             lt: new Date(yearNum, monthNum, 1),
           },
+          shipmentStatus: {
+            not: "CANCELLED",
+          },
         },
       },
       _sum: {
@@ -56,6 +64,7 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
       },
     });
 
+    // Ambil kehadiran pengemudi
     const attendanceByDriver = await prisma.driverAttendance.groupBy({
       by: ["driverCode"],
       where: {
@@ -70,7 +79,23 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
       },
     });
 
+    // Ambil daftar pengemudi dengan filter
+    const driverWhere: any = {};
+    if (driver_code) {
+      driverWhere.driverCode = {
+        contains: driver_code as string,
+        mode: "insensitive",
+      };
+    }
+    if (name) {
+      driverWhere.name = {
+        contains: name as string,
+        mode: "insensitive",
+      };
+    }
+
     const drivers = await prisma.driver.findMany({
+      where: driverWhere,
       skip: offset,
       take: limit,
       select: {
@@ -79,8 +104,12 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
       },
     });
 
-    const totalRow = await prisma.driver.count();
+    // Hitung total pengemudi yang sesuai dengan filter
+    const totalRow = await prisma.driver.count({
+      where: driverWhere,
+    });
 
+    // Proses data pengemudi
     const result: ResultItem[] = await Promise.all(
       drivers.map(async (driver) => {
         const costs = shipmentCost.filter(
@@ -105,6 +134,7 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
           total_paid +
           total_attendance_salary;
 
+        // Hitung jumlah pengiriman unik
         const shipmentNos = await prisma.shipmentCost.findMany({
           where: {
             driverCode: driver.driverCode,
@@ -113,13 +143,14 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
                 gte: new Date(yearNum, monthNum - 1, 1),
                 lt: new Date(yearNum, monthNum, 1),
               },
+              shipmentStatus: {
+                not: "CANCELLED",
+              },
             },
           },
           select: { shipmentNo: true },
-          distinct: ["shipmentNo"], // coba ini jika didukung, kalau error hapus
         });
 
-        // Hitung jumlah unik shipmentNo secara manual
         const count_shipment = new Set(shipmentNos.map((s) => s.shipmentNo))
           .size;
 
@@ -136,8 +167,24 @@ export const getDriverSalaries = async (req: Request, res: Response) => {
       })
     );
 
+    // Filter hasil berdasarkan status
+    let filteredResult = result.filter((r) => r.total_salary > 0);
+
+    if (status === "PENDING") {
+      filteredResult = filteredResult.filter((r) => r.total_pending > 0);
+    } else if (status === "CONFIRMED") {
+      filteredResult = filteredResult.filter((r) => r.total_confirmed > 0);
+    } else if (status === "PAID") {
+      filteredResult = filteredResult.filter((r) => r.total_paid > 0);
+    } else if (status) {
+      return res.status(400).json({
+        message: `Invalid status filter. Allowed values: PENDING, CONFIRMED, PAID.`,
+        isSuccess: false,
+      });
+    }
+
     return res.status(200).json({
-      data: result,
+      data: filteredResult,
       total_row: totalRow,
       current: currentPage,
       page_size: limit,
